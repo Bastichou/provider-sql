@@ -51,6 +51,7 @@ const (
 	errSelectGrant  = "cannot select grant"
 	errCreateGrant  = "cannot create grant"
 	errRevokeGrant  = "cannot revoke grant"
+	errNoSchema     = "schema not passed or could not be resolved"
 	errNoRole       = "role not passed or could not be resolved"
 	errNoDatabase   = "database not passed or could not be resolved"
 	errNoPrivileges = "privileges not passed"
@@ -199,27 +200,38 @@ func selectGrantQuery(gp v1alpha1.GrantParameters, q *xsql.Query) error {
 		// permissions.
 		q.String = "SELECT EXISTS(SELECT 1 " +
 			"FROM pg_database db, " +
-			"aclexplode(datacl) as acl " +
+			"aclexplode(datacl) as acl, " +
+			"pg_namespace as schema " +
 			"INNER JOIN pg_roles s ON acl.grantee = s.oid " +
 			// Filter by database, role and grantable setting
 			"WHERE db.datname=$1 " +
 			"AND s.rolname=$2 " +
 			"AND acl.is_grantable=$3 " +
-			"GROUP BY db.datname, s.rolname, acl.is_grantable " +
+			// TODO: Filter by schema this is not working
+			"AND schema.nspname=$4 " +
+			"GROUP BY db.datname, s.rolname, acl.is_grantable, schema.nspname " +
 			// Check privileges match. Convoluted right-hand-side is necessary to
 			// ensure identical sort order of the input permissions.
 			"HAVING array_agg(acl.privilege_type ORDER BY privilege_type ASC) " +
-			"= (SELECT array(SELECT unnest($4::text[]) as perms ORDER BY perms ASC)))"
+			"= (SELECT array(SELECT unnest($5::text[]) as perms ORDER BY perms ASC)))"
 
 		q.Parameters = []interface{}{
 			gp.Database,
 			gp.Role,
 			gro,
+			gp.Schema,
 			pq.Array(sp),
 		}
 		return nil
 	}
 	return errors.New(errUnknownGrant)
+}
+
+func withSchema(schema *string) string {
+	if schema != nil {
+		return fmt.Sprintf("IN SCHEMA %s", *schema)
+	}
+	return ""
 }
 
 func withOption(option *v1alpha1.GrantOption) string {
@@ -262,17 +274,19 @@ func createGrantQueries(gp v1alpha1.GrantParameters, ql *[]xsql.Query) error { /
 
 		*ql = append(*ql,
 			// REVOKE ANY MATCHING EXISTING PERMISSIONS
-			xsql.Query{String: fmt.Sprintf("REVOKE %s ON DATABASE %s FROM %s",
+			xsql.Query{String: fmt.Sprintf("REVOKE %s ON DATABASE %s %s FROM %s",
 				sp,
 				db,
+				withSchema(gp.Schema),
 				ro,
 			)},
 
 			// GRANT REQUESTED PERMISSIONS
-			xsql.Query{String: fmt.Sprintf("GRANT %s ON DATABASE %s TO %s %s",
+			xsql.Query{String: fmt.Sprintf("GRANT %s ON DATABASE %s TO %s %s %s",
 				sp,
 				db,
 				ro,
+				withSchema(gp.Schema),
 				withOption(gp.WithOption),
 			)},
 		)
@@ -297,9 +311,10 @@ func deleteGrantQuery(gp v1alpha1.GrantParameters, q *xsql.Query) error {
 		)
 		return nil
 	case roleDatabase:
-		q.String = fmt.Sprintf("REVOKE %s ON DATABASE %s FROM %s",
+		q.String = fmt.Sprintf("REVOKE %s ON DATABASE %s %s FROM %s",
 			strings.Join(gp.Privileges.ToStringSlice(), ","),
 			pq.QuoteIdentifier(*gp.Database),
+			withSchema(gp.Schema),
 			ro,
 		)
 		return nil
