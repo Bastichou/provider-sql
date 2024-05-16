@@ -141,6 +141,20 @@ type GrantParameters struct {
 	// +optional
 	DatabaseSelector *xpv1.Selector `json:"databaseSelector,omitempty"`
 
+	// Schema this grant is for.
+	// +optional
+	Schema *string `json:"schema,omitempty"`
+
+	// SchemaRef references the schema object this grant it for.
+	// +immutable
+	// +optional
+	SchemaRef *xpv1.Reference `json:"schemaRef,omitempty"`
+
+	// SchemaSelector selects a reference to a Schema this grant is for.
+	// +immutable
+	// +optional
+	SchemaSelector *xpv1.Selector `json:"schemaSelector,omitempty"`
+
 	// MemberOf is the Role that this grant makes Role a member of.
 	// +optional
 	MemberOf *string `json:"memberOf,omitempty"`
@@ -211,6 +225,20 @@ func (mg *Grant) ResolveReferences(ctx context.Context, c client.Reader) error {
 	}
 	mg.Spec.ForProvider.Database = reference.ToPtrValue(rsp.ResolvedValue)
 	mg.Spec.ForProvider.DatabaseRef = rsp.ResolvedReference
+
+	// Resolve spec.forProvider.schema
+	rsp, err = r.Resolve(ctx, reference.ResolutionRequest{
+		CurrentValue: reference.FromPtrValue(mg.Spec.ForProvider.Schema),
+		Reference:    mg.Spec.ForProvider.SchemaRef,
+		Selector:     mg.Spec.ForProvider.SchemaSelector,
+		To:           reference.To{Managed: &Schema{}, List: &SchemaList{}},
+		Extract:      reference.ExternalName(),
+	})
+	if err != nil {
+		return errors.Wrap(err, "spec.forProvider.schema")
+	}
+	mg.Spec.ForProvider.Schema = reference.ToPtrValue(rsp.ResolvedValue)
+	mg.Spec.ForProvider.SchemaRef = rsp.ResolvedReference
 
 	// Resolve spec.forProvider.role
 	rsp, err = r.Resolve(ctx, reference.ResolutionRequest{
